@@ -64,9 +64,10 @@ impl Connection {
         Transmission::ConnectionClosed => return Err(Error::new(ErrorKind::ConnectionAborted, "Connection closed by remote host while waiting for CONNECTED frame."))
       } 
     }
-    match connected_frame.command.as_ref() {
+    let reply = connected_frame.command.as_ref();
+    match reply {
       "CONNECTED" => debug!("Received CONNECTED frame: {}", connected_frame),
-       _ => return Err(Error::new(ErrorKind::InvalidInput, "Could not connect."))
+       _ => return Err(Error::new(ErrorKind::InvalidInput, reply))
     }
     match connected_frame.headers.get_heart_beat() {
       Some(header::HeartBeat(tx_ms, rx_ms)) => Ok((tx_ms, rx_ms)),
