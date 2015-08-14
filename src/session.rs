@@ -33,19 +33,39 @@ pub trait FrameHandler {
   fn on_frame(&mut self, &Frame);
 }
 
+pub trait FrameHandlerMut {
+	fn on_frame(&mut self, &mut Frame);
+}
+
 impl <F> FrameHandler for F where F: FnMut(&Frame) {
   fn on_frame(&mut self, frame: &Frame) {
     self(frame)
   }
 }
 
+impl <F> FrameHandlerMut for F where F: FnMut(&mut Frame) {
+	fn on_frame(&mut self, frame: &mut Frame) {
+		self(frame)
+	}
+}
+
 pub trait ToFrameHandler <'a> {
   fn to_frame_handler(self) -> Box<FrameHandler + 'a>;
+}
+
+pub trait ToFrameHandlerMut <'a> {
+	fn to_frame_handler_mut(self) -> Box<FrameHandlerMut + 'a>;
 }
 
 impl <'a, T: 'a> ToFrameHandler <'a> for T where T: FrameHandler {
   fn to_frame_handler(self) -> Box<FrameHandler + 'a> {
     Box::new(self) as Box<FrameHandler>
+  }
+}
+
+impl <'a, T: 'a> ToFrameHandlerMut <'a> for T where T: FrameHandlerMut {
+  fn to_frame_handler_mut(self) -> Box<FrameHandlerMut + 'a> {
+    Box::new(self) as Box<FrameHandlerMut>
   }
 }
 
@@ -77,7 +97,9 @@ pub struct Session <'a> {
   tx_heartbeat_ms: u64,
   pub subscriptions: HashMap<String, Subscription <'a>>,
   pub receipt_handlers: HashMap<String, Box<FrameHandler + 'a>>,
-  error_callback: Box<FrameHandler + 'a>
+  error_callback: Box<FrameHandler + 'a>,
+	frame_send_callback: Box<FrameHandlerMut + 'a>,
+	frame_receive_callback: Box<FrameHandlerMut + 'a>
 }
 
 pub enum StompTimeout {
@@ -124,6 +146,7 @@ impl <'a> Handler for Session<'a> {
         Some(CompleteFrame(mut frame)) => {
           debug!("Received frame!:\n{}", frame);
           self.reset_rx_heartbeat_timeout(event_loop);
+					self.frame_receive_callback.on_frame(&mut frame);
           self.dispatch(&mut frame);
           self.frame_buffer.recycle_frame(frame);
           num_frames += 1;
@@ -159,7 +182,9 @@ impl <'a> Session <'a> {
       tx_heartbeat_ms: (tx_heartbeat_ms as f64 / 2f64) as u64, //FIXME: Make this configurable, change units
       subscriptions: HashMap::new(),
       receipt_handlers: HashMap::new(),
-      error_callback: Box::new(Session::default_error_callback) as Box<FrameHandler>
+      error_callback: Box::new(Session::default_error_callback) as Box<FrameHandler>,
+			frame_send_callback: Box::new(Session::default_frame_send_callback) as Box<FrameHandlerMut>,
+			frame_receive_callback: Box::new(Session::default_frame_receive_callback) as Box<FrameHandlerMut>
     }
   }
 
@@ -251,11 +276,29 @@ impl <'a> Session <'a> {
   fn default_error_callback(frame : &Frame) {
     error!("ERROR received:\n{}", frame);
   }
-  
+
+	fn default_frame_send_callback(frame : &mut Frame) {
+		debug!("FRAME sending:\n{}", frame);
+	}
+
+	fn default_frame_receive_callback(frame : &mut Frame) {
+		debug!("FRAME received:\n{}", frame);
+	}
+
   pub fn on_error<T: 'a>(&mut self, handler_convertible: T) where T : ToFrameHandler<'a> + 'a {
     let handler = handler_convertible.to_frame_handler();
     self.error_callback = handler;
   }
+
+	pub fn on_before_send<T: 'a>(&mut self, handler_convertible: T) where T : ToFrameHandlerMut<'a> + 'a {
+		let handler = handler_convertible.to_frame_handler_mut();
+		self.frame_send_callback = handler;
+	}
+
+	pub fn on_before_receive<T: 'a>(&mut self, handler_convertible: T) where T : ToFrameHandlerMut<'a> + 'a {
+		let handler = handler_convertible.to_frame_handler_mut();
+		self.frame_receive_callback = handler;
+	}
 
   fn handle_receipt(&mut self, frame: &mut Frame) {
     match frame.headers.get_receipt_id() {
@@ -332,7 +375,9 @@ impl <'a> Session <'a> {
   }
 
   pub fn send(&mut self, frame: Frame) -> Result<()> {
-    match frame.write(&mut self.connection.tcp_stream) {
+		let mut mut_frame = frame;
+		self.frame_send_callback.on_frame(&mut mut_frame);
+    match mut_frame.write(&mut self.connection.tcp_stream) {
       Ok(_) => Ok(()),//FIXME: Replace 'Other' below with a more meaningful ErrorKind
       Err(_) => Err(Error::new(Other, "Could not send frame: the connection to the server was lost."))
     }
